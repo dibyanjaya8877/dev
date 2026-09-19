@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useEffect, useState } from "react";
-import { Heart, LogOut, MessageCircle, Search, ShieldCheck, ShoppingBag, Sparkles, UserPlus, UserRound } from "lucide-react";
+import { Heart, LoaderCircle, LogOut, MessageCircle, RefreshCw, Search, ShieldCheck, ShoppingBag, Sparkles, UserPlus, UserRound } from "lucide-react";
 import { AdminPanel } from "@/components/AdminPanel";
 import { AuthModal } from "@/components/AuthModal";
 import { ChatRoom } from "@/components/ChatRoom";
@@ -35,13 +35,36 @@ const products = [
 
 export default function Home() {
   const [user, setUser] = useState<User | null>(null);
+  const [authPending, setAuthPending] = useState(true);
+  const [sessionError, setSessionError] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [view, setView] = useState<View>("discover");
   const [query, setQuery] = useState("");
 
-  useEffect(() => { fetch("/api/auth/me").then((response) => response.json()).then((data) => setUser(data.user)); }, []);
+  useEffect(() => {
+    let active = true;
+
+    async function restoreSession() {
+      try {
+        const response = await fetch("/api/auth/me", { cache: "no-store", credentials: "same-origin" });
+        if (!response.ok) throw new Error("Session check failed.");
+        const data = await response.json();
+        if (!active) return;
+        setUser(data.user ?? null);
+        setSessionError(false);
+      } catch {
+        if (active) setSessionError(true);
+      } finally {
+        if (active) setAuthPending(false);
+      }
+    }
+
+    void restoreSession();
+    return () => { active = false; };
+  }, []);
 
   function navigate(next: View) {
+    if (authPending || sessionError) return;
     if (next !== "discover" && !user) return setAuthOpen(true);
     setView(next);
   }
@@ -49,14 +72,24 @@ export default function Home() {
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
     setUser(null);
+    setSessionError(false);
     setView("discover");
   }
 
   async function refreshAccount() {
-    const response = await fetch("/api/auth/me");
-    const data = await response.json();
-    setUser(data.user);
-    if (data.user?.approved) setView("discover");
+    setAuthPending(true);
+    try {
+      const response = await fetch("/api/auth/me", { cache: "no-store", credentials: "same-origin" });
+      if (!response.ok) throw new Error("Session check failed.");
+      const data = await response.json();
+      setUser(data.user ?? null);
+      setSessionError(false);
+      if (data.user?.approved) setView("discover");
+    } catch {
+      setSessionError(true);
+    } finally {
+      setAuthPending(false);
+    }
   }
 
   const visibleProducts = products.filter((product) => `${product.name} ${product.category}`.toLowerCase().includes(query.toLowerCase()));
@@ -65,7 +98,7 @@ export default function Home() {
     <header className="site-header">
       <button className="brand" onClick={() => setView("discover")}><Heart size={19} fill="currentColor" /><span>Pairly</span></button>
       {(!user || user.approved) && <nav className="desktop-nav" aria-label="Primary"><button className={view === "discover" ? "active" : ""} onClick={() => navigate("discover")}>Discover</button>{user?.approved && <button className={view === "connections" ? "active" : ""} onClick={() => navigate("connections")}>Connections</button>}{user?.approved && <button className={view === "messages" ? "active" : ""} onClick={() => navigate("messages")}>Messages</button>}{user?.role === "admin" && <button className={view === "admin" ? "active" : ""} onClick={() => navigate("admin")}>Admin</button>}</nav>}
-      {user ? <div className="user-actions"><button className="user-chip" onClick={() => navigate("profile")}><span>{user.name[0].toUpperCase()}</span>{user.name}</button><button className="icon-button" onClick={logout} title="Sign out" aria-label="Sign out"><LogOut size={18} /></button></div> : <button className="primary-button compact" onClick={() => setAuthOpen(true)}>Join Pairly</button>}
+      {authPending ? <div className="user-actions" aria-live="polite"><LoaderCircle size={20} aria-label="Restoring session" /></div> : user ? <div className="user-actions"><button className="user-chip" onClick={() => navigate("profile")}><span>{user.name[0].toUpperCase()}</span>{user.name}</button><button className="icon-button" onClick={logout} title="Sign out" aria-label="Sign out"><LogOut size={18} /></button></div> : sessionError ? <button className="primary-button compact" onClick={refreshAccount}><RefreshCw size={17} />Retry session</button> : <button className="primary-button compact" onClick={() => setAuthOpen(true)}>Join Pairly</button>}
     </header>
 
     <main>
@@ -86,6 +119,6 @@ export default function Home() {
     </main>
 
     {(!user || user.approved) && <nav className="mobile-nav" aria-label="Mobile navigation"><button className={view === "discover" ? "active" : ""} onClick={() => navigate("discover")}><ShoppingBag /><span>Discover</span></button>{user?.approved && <button className={view === "connections" ? "active" : ""} onClick={() => navigate("connections")}><UserPlus /><span>Connect</span></button>}{user?.approved && <button className={view === "messages" ? "active" : ""} onClick={() => navigate("messages")}><MessageCircle /><span>Messages</span></button>}{user?.role === "admin" ? <button className={view === "admin" ? "active" : ""} onClick={() => navigate("admin")}><ShieldCheck /><span>Admin</span></button> : user ? <button className={view === "profile" ? "active" : ""} onClick={() => navigate("profile")}><UserRound /><span>Profile</span></button> : null}</nav>}
-    {authOpen && <AuthModal onClose={() => setAuthOpen(false)} onSuccess={(account) => { setUser(account); setAuthOpen(false); setView(account.role === "admin" ? "admin" : account.approved ? "connections" : "profile"); }} />}
+    {authOpen && <AuthModal onClose={() => setAuthOpen(false)} onSuccess={(account) => { setUser(account); setAuthPending(false); setSessionError(false); setAuthOpen(false); setView(account.role === "admin" ? "admin" : account.approved ? "connections" : "profile"); }} />}
   </>;
 }

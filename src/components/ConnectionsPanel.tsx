@@ -10,6 +10,7 @@ export function ConnectionsPanel({ currentUser }: { currentUser: User }) {
   const [people, setPeople] = useState<User[]>([]);
   const [requests, setRequests] = useState<FriendRequest[]>([]);
   const [query, setQuery] = useState("");
+  const [sendingTo, setSendingTo] = useState<string | null>(null);
 
   async function load() {
     const [usersResponse, requestsResponse] = await Promise.all([fetch("/api/users"), fetch("/api/friends")]);
@@ -28,8 +29,14 @@ export function ConnectionsPanel({ currentUser }: { currentUser: User }) {
   }, []);
 
   async function send(recipientId: string) {
-    const response = await fetch("/api/friends", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipientId }) });
-    if (response.ok) await load();
+    if (sendingTo) return;
+    setSendingTo(recipientId);
+    try {
+      const response = await fetch("/api/friends", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipientId }) });
+      if (response.ok || response.status === 409) await load();
+    } finally {
+      setSendingTo(null);
+    }
   }
 
   async function respond(requestId: string, action: "accept" | "reject") {
@@ -47,7 +54,7 @@ export function ConnectionsPanel({ currentUser }: { currentUser: User }) {
       const request = requestFor(person.id);
       const incoming = request?.status === "pending" && request.recipientId === currentUser.id;
       return <article className="connection-card" key={person.id}><span className="avatar connection-avatar">{person.name[0].toUpperCase()}</span><div><h2>{person.name}</h2><p>{person.email}</p></div>
-        {!request && <button className="primary-button" onClick={() => send(person.id)}><UserPlus size={17} /> Connect</button>}
+        {!request && <button className="primary-button" disabled={sendingTo === person.id} onClick={() => void send(person.id)}><UserPlus size={17} /> {sendingTo === person.id ? "Sending..." : "Connect"}</button>}
         {request?.status === "accepted" && <span className="connected-label"><Check size={16} /> Connected</span>}
         {request?.status === "pending" && !incoming && <span className="waiting-label">Request sent</span>}
         {incoming && <div className="request-actions"><button className="approve-button" onClick={() => respond(request.id, "accept")}><Check size={17} /> Accept</button><button className="revoke-button" onClick={() => respond(request.id, "reject")}><X size={17} /> Decline</button></div>}

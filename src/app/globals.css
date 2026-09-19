@@ -14,6 +14,7 @@ button { cursor: pointer; }
 .primary-button, .light-button, .outline-button { min-height: 44px; border-radius: 4px; border: 0; display: inline-flex; align-items: center; justify-content: center; gap: 9px; padding: 0 22px; font-weight: 700; }
 .primary-button { color: white; background: var(--rose-dark); }
 .primary-button:hover { background: #85263b; }
+.primary-button:disabled { cursor: progress; opacity: .65; }
 .primary-button.compact { min-height: 40px; padding-inline: 18px; }
 .user-actions { display: flex; align-items: center; gap: 8px; }
 .user-chip { border: 0; background: transparent; display: flex; gap: 9px; align-items: center; font-weight: 700; }
