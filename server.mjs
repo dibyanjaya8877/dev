@@ -6,7 +6,8 @@ import { Server } from "socket.io";
 
 const port = Number(process.env.PORT ?? 3000);
 const dev = process.env.NODE_ENV !== "production" && process.env.npm_lifecycle_event !== "start";
-const hostname = process.env.HOSTNAME ?? (dev ? "localhost" : "0.0.0.0");
+const rawHostname = process.env.HOSTNAME ?? (dev ? "localhost" : "0.0.0.0");
+const hostname = rawHostname.replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 let mongoClientPromise;

@@ -108,7 +108,7 @@ export function ChatRoom({ currentUser }: { currentUser: User }) {
   }, [selected]);
 
   useEffect(() => {
-    const socket = io(); socketRef.current = socket;
+    const socket = io(""); socketRef.current = socket;
     socket.on("message:new", (message: Message) => { if (message.senderId === selectedRef.current?.id) { setMessages((items) => [...items, message]); socket.emit("message:read", { targetId: message.senderId }); } });
     socket.on("message:update", (message: Message) => setMessages((items) => items.map((item) => item.id === message.id ? message : item)));
     socket.on("message:status", ({ messageId, status }: { messageId: string; status: Message["status"] }) => setMessages((items) => items.map((item) => item.id === messageId ? { ...item, status } : item)));
