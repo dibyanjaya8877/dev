@@ -73,9 +73,15 @@ async function startServer() {
     socket.on("message:read", async (payload) => {
       if (!payload?.targetId || !await areFriends(user.id, payload.targetId)) return;
       const db = await getDatabase();
+      const account = await db.collection("users").findOne({ _id: new ObjectId(user.id) }, { projection: { readReceipts: 1 } });
+      if (account?.readReceipts === false) return;
       const pairId = [user.id, payload.targetId].sort().join(":");
       await db.collection("messages").updateMany({ conversationId: pairId, senderId: payload.targetId, status: { $ne: "read" } }, { $set: { status: "read", readAt: new Date() } });
       io.to(payload.targetId).emit("message:read", { readerId: user.id });
+    });
+
+    socket.on("conversation:delete", async (payload) => {
+      if (payload?.targetId && await areFriends(user.id, payload.targetId)) io.to(payload.targetId).emit("conversation:delete", { userId: user.id });
     });
 
     for (const event of ["typing:start", "typing:stop", "recording:start", "recording:stop"]) {

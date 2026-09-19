@@ -48,9 +48,39 @@ export async function createMessage(payload: unknown) {
 export async function listMessages(otherUserId: string) {
   const current = await requireApprovedAccount();
   const { db, pairId } = await requireFriendship(current.id, otherUserId);
-  await db.collection("messages").updateMany({ conversationId: pairId, recipientId: current.id, status: { $ne: "read" } }, { $set: { status: "read", readAt: new Date() } });
+  const account = await db.collection("users").findOne({ _id: new ObjectId(current.id) }, { projection: { readReceipts: 1 } });
+  if (account?.readReceipts !== false) await db.collection("messages").updateMany({ conversationId: pairId, recipientId: current.id, status: { $ne: "read" } }, { $set: { status: "read", readAt: new Date() } });
   const messages = await db.collection("messages").find({ conversationId: pairId, deletedFor: { $ne: current.id } }).sort({ createdAt: 1 }).limit(300).toArray();
   return messages.map((message) => serialize(message, current.id));
+}
+
+export async function listConversationSummaries() {
+  const current = await requireApprovedAccount();
+  const { getDatabase } = await import("@/lib/mongodb");
+  const db = await getDatabase();
+  const conversations = await db.collection("messages").aggregate([
+    { $match: { $or: [{ senderId: current.id }, { recipientId: current.id }] } },
+    { $sort: { createdAt: -1 } },
+    { $group: {
+      _id: "$conversationId",
+      lastMessage: { $first: "$body" },
+      lastMessageAt: { $first: "$createdAt" },
+      unreadCount: { $sum: { $cond: [{ $and: [{ $eq: ["$recipientId", current.id] }, { $ne: ["$status", "read"] }, { $ne: ["$deletedForEveryone", true] }, { $not: [{ $in: [current.id, { $ifNull: ["$deletedFor", []] }] }] }] }, 1, 0] } },
+    } },
+  ]).toArray();
+  return conversations.map((conversation) => ({ conversationId: String(conversation._id), lastMessage: String(conversation.lastMessage ?? ""), lastMessageAt: conversation.lastMessageAt, unreadCount: Number(conversation.unreadCount ?? 0) }));
+}
+
+export async function deleteConversation(otherUserId: string) {
+  const current = await requireApprovedAccount();
+  const { db, pairId } = await requireFriendship(current.id, otherUserId);
+  await Promise.all([
+    db.collection("messages").deleteMany({ conversationId: pairId }),
+    db.collection("friendRequests").deleteMany({ pairId }),
+    db.collection("calls").deleteMany({ $or: [{ callerId: current.id, recipientId: otherUserId }, { callerId: otherUserId, recipientId: current.id }, { userId: current.id, peerId: otherUserId }, { userId: otherUserId, peerId: current.id }] }),
+    db.collection("users").updateOne({ _id: new ObjectId(current.id) }, { $addToSet: { hiddenContacts: otherUserId } }),
+    db.collection("users").updateOne({ _id: new ObjectId(otherUserId) }, { $addToSet: { hiddenContacts: current.id } }),
+  ]);
 }
 
 export async function updateMessage(messageId: string, payload: unknown) {

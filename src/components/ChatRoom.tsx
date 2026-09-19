@@ -6,9 +6,10 @@ import EmojiPicker, { EmojiClickData, Theme } from "emoji-picker-react";
 import { io, Socket } from "socket.io-client";
 import { Check, CheckCheck, Clock3, Copy, FileIcon, Film, Image as ImageIcon, MapPin, Maximize2, Mic, MicOff, Minimize2, MoreVertical, Paperclip, Phone, PhoneOff, ScreenShare, ScreenShareOff, Search, Send, Smile, Sparkles, SwitchCamera, Trash2, Video, VideoOff, Volume2, VolumeX, Wifi, WifiOff, X } from "lucide-react";
 
-type User = { id: string; name: string; email: string; lastSeen?: string };
+type User = { id: string; name: string; email: string; lastSeen?: string; readReceipts?: boolean };
 type Attachment = { url: string; name: string; mime: string; size: number; kind?: string };
 type Message = { id: string; senderId: string; recipientId: string; body: string; type: string; attachments: Attachment[]; location?: { latitude: number; longitude: number }; status: "sent" | "delivered" | "read"; reactions: Record<string, string[]>; editedAt?: string; deletedForEveryone?: boolean; createdAt: string };
+type ConversationSummary = { conversationId: string; lastMessage: string; lastMessageAt?: string; unreadCount: number };
 type CallState = { peer: User; incoming: boolean; status: string; type: "voice" | "video"; logId?: string; startedAt: number; connectedAt?: number };
 type CallLog = { id: string; peerId: string; type: "voice" | "video"; direction: string; status: string; startedAt: string; durationSeconds: number };
 type CallQuality = "Good" | "Fair" | "Poor" | "Connecting";
@@ -27,6 +28,12 @@ export function ChatRoom({ currentUser }: { currentUser: User }) {
   const [composer, setComposer] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
+  const [conversationMenuOpen, setConversationMenuOpen] = useState(false);
+  const [conversationSummaries, setConversationSummaries] = useState<ConversationSummary[]>([]);
+  const [messageSearch, setMessageSearch] = useState("");
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [galleryFilter, setGalleryFilter] = useState<"image" | "video" | "file">("image");
+  const [readReceipts, setReadReceipts] = useState(currentUser.readReceipts !== false);
   const [picker, setPicker] = useState<"emoji" | "gif" | "sticker" | "attach" | null>(null);
   const [search, setSearch] = useState("");
   const [activity, setActivity] = useState("");
@@ -61,6 +68,13 @@ export function ChatRoom({ currentUser }: { currentUser: User }) {
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  async function loadConversationSummaries() {
+    const response = await fetch("/api/messages");
+    if (!response.ok) return;
+    const data = await response.json();
+    setConversationSummaries(data.conversations ?? []);
+  }
+
   const finishCallLog = useCallback(async (state: CallState, status: "completed" | "declined" | "missed") => {
     if (!state.logId) return;
     const durationSeconds = state.connectedAt ? Math.max(0, Math.round((Date.now() - state.connectedAt) / 1000)) : 0;
@@ -90,12 +104,12 @@ export function ChatRoom({ currentUser }: { currentUser: User }) {
   }, []);
 
   useEffect(() => {
-    Promise.all([fetch("/api/users"), fetch("/api/friends"), fetch("/api/calls")])
-      .then(async ([usersResponse, requestsResponse, callsResponse]) => Promise.all([usersResponse.json(), requestsResponse.json(), callsResponse.json()]))
-      .then(([usersData, requestsData, callsData]) => {
+    Promise.all([fetch("/api/users"), fetch("/api/friends"), fetch("/api/calls"), fetch("/api/messages")])
+      .then(async ([usersResponse, requestsResponse, callsResponse, messagesResponse]) => Promise.all([usersResponse.json(), requestsResponse.json(), callsResponse.json(), messagesResponse.json()]))
+      .then(([usersData, requestsData, callsData, messagesData]) => {
         const acceptedIds = new Set<string>((requestsData.requests ?? []).filter((request: { status: string }) => request.status === "accepted").flatMap((request: { senderId: string; recipientId: string }) => [request.senderId, request.recipientId]));
         const friends = (usersData.users ?? []).filter((person: User) => acceptedIds.has(person.id));
-        setPeople(friends); setSelected(friends[0] ?? null); setCallHistory(callsData.calls ?? []);
+        setPeople(friends); setSelected(friends[0] ?? null); setCallHistory(callsData.calls ?? []); setConversationSummaries(messagesData.conversations ?? []);
       });
   }, []);
 
@@ -103,16 +117,22 @@ export function ChatRoom({ currentUser }: { currentUser: User }) {
     if (!selected) return;
     fetch(`/api/messages/${selected.id}`).then((response) => response.json()).then((data) => {
       setMessages(data.messages ?? []);
-      socketRef.current?.emit("message:read", { targetId: selected.id });
+      if (readReceipts) socketRef.current?.emit("message:read", { targetId: selected.id });
+      void loadConversationSummaries();
     });
-  }, [selected]);
+  }, [selected, readReceipts]);
 
   useEffect(() => {
     const socket = io(""); socketRef.current = socket;
-    socket.on("message:new", (message: Message) => { if (message.senderId === selectedRef.current?.id) { setMessages((items) => [...items, message]); socket.emit("message:read", { targetId: message.senderId }); } });
+    socket.on("message:new", (message: Message) => { if (message.senderId === selectedRef.current?.id) { setMessages((items) => [...items, message]); if (readReceipts) socket.emit("message:read", { targetId: message.senderId }); } void loadConversationSummaries(); });
     socket.on("message:update", (message: Message) => setMessages((items) => items.map((item) => item.id === message.id ? message : item)));
     socket.on("message:status", ({ messageId, status }: { messageId: string; status: Message["status"] }) => setMessages((items) => items.map((item) => item.id === messageId ? { ...item, status } : item)));
     socket.on("message:read", () => setMessages((items) => items.map((item) => item.senderId === currentUser.id ? { ...item, status: "read" } : item)));
+    socket.on("conversation:delete", ({ userId }: { userId: string }) => {
+      setPeople((items) => items.filter((person) => person.id !== userId));
+      setCallHistory((items) => items.filter((call) => call.peerId !== userId));
+      if (userId === selectedRef.current?.id) { setMessages([]); setSelected(null); }
+    });
     socket.on("presence:update", ({ userId, online: isOnline, lastSeen }: { userId: string; online: boolean; lastSeen?: string }) => { setOnline((items) => { const next = new Set(items); if (isOnline) next.add(userId); else next.delete(userId); return next; }); if (lastSeen) setPeople((items) => items.map((person) => person.id === userId ? { ...person, lastSeen } : person)); });
     socket.on("typing:start", ({ userId, name }: { userId: string; name: string }) => { if (userId === selectedRef.current?.id) setActivity(`${name} is typing...`); });
     socket.on("typing:stop", () => setActivity(""));
@@ -128,7 +148,7 @@ export function ChatRoom({ currentUser }: { currentUser: User }) {
     socket.on("call:ice", async ({ candidate }: { candidate: RTCIceCandidateInit }) => { try { await peerRef.current?.addIceCandidate(candidate); } catch {} });
     socket.on("call:end", () => stopCall(false));
     return () => { socket.disconnect(); stopCall(false); };
-  }, [currentUser.id, stopCall]);
+  }, [currentUser.id, readReceipts, stopCall]);
 
   useEffect(() => { selectedRef.current = selected; }, [selected]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, activity]);
@@ -172,7 +192,7 @@ export function ChatRoom({ currentUser }: { currentUser: User }) {
     if (!selected) return;
     const response = await fetch("/api/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipientId: selected.id, body: payload.body ?? "", type: payload.type ?? "text", attachments: payload.attachments ?? [], location: payload.location }) });
     const data = await response.json();
-    if (response.ok) { setMessages((items) => [...items, data.message]); socketRef.current?.emit("message:new", data.message); }
+    if (response.ok) { setMessages((items) => [...items, data.message]); socketRef.current?.emit("message:new", data.message); void loadConversationSummaries(); }
   }
 
   async function submit(event: FormEvent) {
@@ -214,6 +234,27 @@ export function ChatRoom({ currentUser }: { currentUser: User }) {
     const data = await response.json();
     if (response.ok && data.message) { setMessages((items) => payload && "action" in payload && payload.action === "deleteMe" ? items.filter((item) => item.id !== messageId) : items.map((item) => item.id === messageId ? data.message : item)); socketRef.current?.emit("message:update", { targetId: selected?.id, message: data.message }); }
     setActiveMenu(null);
+  }
+
+  async function deleteSelectedConversation() {
+    if (!selected || !window.confirm(`Delete the entire chat with ${selected.name} for both people? This cannot be undone.`)) return;
+    const response = await fetch(`/api/messages/${selected.id}`, { method: "DELETE" });
+    if (response.ok) {
+      setMessages([]);
+      setPeople((items) => items.filter((person) => person.id !== selected.id));
+      setCallHistory((items) => items.filter((call) => call.peerId !== selected.id));
+      setSelected(null);
+      socketRef.current?.emit("conversation:delete", { targetId: selected.id });
+    }
+    setConversationMenuOpen(false);
+  }
+
+  async function toggleReadReceipts() {
+    const next = !readReceipts;
+    setReadReceipts(next);
+    setConversationMenuOpen(false);
+    const response = await fetch("/api/auth/me", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ readReceipts: next }) });
+    if (!response.ok) setReadReceipts(!next);
   }
 
   async function shareLocation() {
@@ -300,24 +341,30 @@ export function ChatRoom({ currentUser }: { currentUser: User }) {
     setCallMinimized(true);
   }
 
-  const filteredPeople = people.filter((person) => `${person.name} ${person.email}`.toLowerCase().includes(search.toLowerCase()));
+  const filteredPeople = people.filter((person) => `${person.name} ${person.email}`.toLowerCase().includes(search.toLowerCase())).sort((first, second) => {
+    const firstSummary = conversationSummaries.find((summary) => summary.conversationId === [currentUser.id, first.id].sort().join(":"));
+    const secondSummary = conversationSummaries.find((summary) => summary.conversationId === [currentUser.id, second.id].sort().join(":"));
+    return new Date(secondSummary?.lastMessageAt ?? 0).getTime() - new Date(firstSummary?.lastMessageAt ?? 0).getTime();
+  });
   const selectedOnline = selected ? online.has(selected.id) : false;
   const callDuration = `${String(Math.floor(callSeconds / 60)).padStart(2, "0")}:${String(callSeconds % 60).padStart(2, "0")}`;
+  const visibleMessages = messages.filter((message) => `${message.body} ${message.attachments?.map((attachment) => attachment.name).join(" ") ?? ""} ${new Date(message.createdAt).toLocaleDateString()}`.toLowerCase().includes(messageSearch.toLowerCase()));
+  const galleryItems = messages.flatMap((message) => message.attachments ?? []).filter((attachment) => galleryFilter === "file" ? !attachment.mime.startsWith("image/") && !attachment.mime.startsWith("video/") : attachment.mime.startsWith(`${galleryFilter}/`));
 
   return <section className="chat-shell rich-chat">
     <aside className="people-panel">
       <div className="chat-sidebar-head"><div><p>Messages</p><h2>Chats</h2></div><span className="avatar">{currentUser.name[0]}</span></div>
       <label className="chat-search"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search conversations" /></label>
       <div className="conversation-tabs"><button className="active">Chats</button><button onClick={() => document.querySelector(".call-history")?.scrollIntoView()}>Calls</button></div>
-      <div className="people-list">{filteredPeople.map((person) => <button key={person.id} className={`person-row ${selected?.id === person.id ? "active" : ""}`} onClick={() => { setActivity(""); setSelected(person); }}><span className="avatar presence-avatar">{person.name[0].toUpperCase()}<i className={online.has(person.id) ? "online" : ""} /></span><span><strong>{person.name}</strong><small>{online.has(person.id) ? "Online" : person.lastSeen ? `Last seen ${new Date(person.lastSeen).toLocaleDateString()}` : "Start a conversation"}</small></span></button>)}</div>
+      <div className="people-list">{filteredPeople.map((person) => { const summary = conversationSummaries.find((item) => item.conversationId === [currentUser.id, person.id].sort().join(":")); return <button key={person.id} className={`person-row ${selected?.id === person.id ? "active" : ""}`} onClick={() => { setActivity(""); setSelected(person); }}><span className="avatar presence-avatar">{person.name[0].toUpperCase()}<i className={online.has(person.id) ? "online" : ""} /></span><span><strong>{person.name}</strong><small>{summary?.lastMessage || (online.has(person.id) ? "Online" : person.lastSeen ? `Last seen ${new Date(person.lastSeen).toLocaleDateString()}` : "Start a conversation")}</small></span>{summary?.unreadCount ? <b className="unread-badge">{summary.unreadCount > 99 ? "99+" : summary.unreadCount}</b> : null}</button>; })}</div>
       <div className="call-history"><h3>Recent calls</h3>{callHistory.slice(0, 5).map((item) => <div key={item.id}><span>{item.type === "video" ? <Video size={15} /> : <Phone size={15} />}</span><p>{people.find((person) => person.id === item.peerId)?.name ?? "Contact"}<small>{item.status} · {new Date(item.startedAt).toLocaleDateString()}</small></p></div>)}</div>
     </aside>
     <div className="conversation-panel">
       {selected ? <>
-        <header className="conversation-header rich-header"><div className="chat-person"><span className="avatar presence-avatar">{selected.name[0]}<i className={selectedOnline ? "online" : ""} /></span><div><h3>{selected.name}</h3><span>{activity || (selectedOnline ? "Online" : selected.lastSeen ? `Last seen ${new Date(selected.lastSeen).toLocaleString()}` : "Offline")}</span></div></div><div className="header-actions"><button onClick={() => startCall("voice")} title="Voice call"><Phone /></button><button onClick={() => startCall("video")} title="Video call"><Video /></button><button title="Conversation details"><MoreVertical /></button></div></header>
+        <header className="conversation-header rich-header"><div className="chat-person"><span className="avatar presence-avatar">{selected.name[0]}<i className={selectedOnline ? "online" : ""} /></span><div><h3>{selected.name}</h3><span>{activity || (selectedOnline ? "Online" : selected.lastSeen ? `Last seen ${new Date(selected.lastSeen).toLocaleString()}` : "Offline")}</span></div></div><label className="message-search"><Search size={15} /><input value={messageSearch} onChange={(event) => setMessageSearch(event.target.value)} placeholder="Search messages" /></label><div className="header-actions"><button onClick={() => startCall("voice")} title="Voice call"><Phone /></button><button onClick={() => startCall("video")} title="Video call"><Video /></button><span className="conversation-menu-wrap"><button onClick={() => setConversationMenuOpen((open) => !open)} title="Conversation options" aria-label="Conversation options"><MoreVertical /></button>{conversationMenuOpen && <div className="conversation-menu"><button onClick={() => setGalleryOpen((open) => !open)}><ImageIcon /> Media gallery</button><button onClick={() => void toggleReadReceipts()}><CheckCheck /> Read receipts: {readReceipts ? "On" : "Off"}</button><button onClick={() => void deleteSelectedConversation()}><Trash2 /> Delete chat</button></div>}</span></div></header>
         <div className="message-list rich-message-list">
           <div className="date-divider"><span>Today</span></div>
-          {messages.map((message) => <div key={message.id} className={`message-wrap ${message.senderId === currentUser.id ? "mine" : "theirs"}`}>
+          {visibleMessages.map((message) => <div key={message.id} className={`message-wrap ${message.senderId === currentUser.id ? "mine" : "theirs"}`}>
             <div className={`message rich-message ${message.senderId === currentUser.id ? "mine" : "theirs"}`}>
               {!message.deletedForEveryone && message.attachments?.map((attachment) => attachment.mime.startsWith("image/") ? <img key={attachment.url} src={attachment.url} alt={attachment.name} className="message-media" /> : attachment.mime.startsWith("video/") ? <video key={attachment.url} src={attachment.url} controls className="message-media" /> : attachment.mime.startsWith("audio/") ? <audio key={attachment.url} src={attachment.url} controls /> : <a key={attachment.url} href={attachment.url} download className="document-message"><FileIcon size={20} /><span>{attachment.name}<small>{Math.ceil(attachment.size / 1024)} KB</small></span></a>)}
               {message.type === "gif" && <img src={message.body} alt="GIF" className="message-media" />}
@@ -330,6 +377,7 @@ export function ChatRoom({ currentUser }: { currentUser: User }) {
           </div>)}
           {activity && <div className="typing-bubble"><i /><i /><i /></div>}<div ref={messagesEndRef} />
         </div>
+        {galleryOpen && <aside className="media-gallery"><div><h3>Shared media</h3><button onClick={() => setGalleryOpen(false)} aria-label="Close gallery"><X /></button></div><nav><button className={galleryFilter === "image" ? "active" : ""} onClick={() => setGalleryFilter("image")}>Photos</button><button className={galleryFilter === "video" ? "active" : ""} onClick={() => setGalleryFilter("video")}>Videos</button><button className={galleryFilter === "file" ? "active" : ""} onClick={() => setGalleryFilter("file")}>Files</button></nav><div className="gallery-items">{galleryItems.length ? galleryItems.map((attachment) => attachment.mime.startsWith("image/") ? <a key={attachment.url} href={attachment.url} target="_blank" rel="noreferrer"><img src={attachment.url} alt={attachment.name} /></a> : <a key={attachment.url} href={attachment.url} target="_blank" rel="noreferrer">{attachment.name}</a>) : <p>No shared {galleryFilter === "file" ? "files" : `${galleryFilter}s`} yet.</p>}</div></aside>}
         {editingId && <div className="editing-banner"><Sparkles size={15} /> Editing message<button onClick={() => { setEditingId(null); setComposer(""); }}><X /></button></div>}
         <form className="message-form rich-composer" onSubmit={submit}>
           <div className="composer-tools"><button type="button" onClick={() => setPicker(picker === "attach" ? null : "attach")} title="Attach"><Paperclip /></button><button type="button" onClick={() => setPicker(picker === "emoji" ? null : "emoji")} title="Emoji"><Smile /></button></div>

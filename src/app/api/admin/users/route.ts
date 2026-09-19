@@ -25,3 +25,21 @@ export async function PATCH(request: Request) {
   await db.collection("users").updateOne({ _id: target._id }, { $set: { approved: parsed.data.approved, updatedAt: new Date() } });
   return NextResponse.json({ ok: true });
 }
+
+export async function DELETE(request: Request) {
+  const admin = await getCurrentAccount();
+  if (!admin || admin.role !== "admin") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const payload = await request.json().catch(() => null);
+  if (!ObjectId.isValid(payload?.userId)) return NextResponse.json({ error: "Invalid request." }, { status: 400 });
+  const db = await getDatabase();
+  const target = await db.collection("users").findOne({ _id: new ObjectId(payload.userId) });
+  if (!target || target.role === "admin" || target.email === process.env.ADMIN_EMAIL) return NextResponse.json({ error: "This account cannot be deleted." }, { status: 400 });
+  const userId = target._id.toString();
+  await Promise.all([
+    db.collection("messages").deleteMany({ $or: [{ senderId: userId }, { recipientId: userId }] }),
+    db.collection("friendRequests").deleteMany({ $or: [{ senderId: userId }, { recipientId: userId }] }),
+    db.collection("calls").deleteMany({ $or: [{ callerId: userId }, { recipientId: userId }, { userId }, { peerId: userId }] }),
+    db.collection("users").deleteOne({ _id: target._id }),
+  ]);
+  return NextResponse.json({ ok: true });
+}

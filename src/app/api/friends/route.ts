@@ -22,6 +22,8 @@ export async function POST(request: Request) {
   const db = await getDatabase();
   const recipient = await db.collection("users").findOne({ _id: new ObjectId(parsed.data.recipientId), approved: true });
   if (!recipient) return NextResponse.json({ error: "User is not available." }, { status: 404 });
+  const currentAccount = await db.collection("users").findOne({ _id: new ObjectId(current.id) }, { projection: { hiddenContacts: 1 } });
+  if (currentAccount?.hiddenContacts?.includes(parsed.data.recipientId) || recipient.hiddenContacts?.includes(current.id)) return NextResponse.json({ error: "User is not available." }, { status: 404 });
   const pairId = [current.id, parsed.data.recipientId].sort().join(":");
   const existing = await db.collection("friendRequests").findOne({ pairId });
   if (existing) return NextResponse.json({ error: "A connection request already exists." }, { status: 409 });

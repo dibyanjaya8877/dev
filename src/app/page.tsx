@@ -9,7 +9,7 @@ import { ChatRoom } from "@/components/ChatRoom";
 import { ConnectionsPanel } from "@/components/ConnectionsPanel";
 import { PendingApproval } from "@/components/PendingApproval";
 
-type User = { id: string; name: string; email: string; role: "admin" | "user"; approved: boolean };
+type User = { id: string; name: string; email: string; role: "admin" | "user"; approved: boolean; readReceipts?: boolean };
 type View = "discover" | "connections" | "messages" | "profile" | "admin";
 
 const products = [
